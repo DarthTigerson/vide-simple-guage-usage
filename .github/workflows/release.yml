@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      VSUITE_STORE_TOKEN: ${{ secrets.VSUITE_STORE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      # The tag is the version: stamp it into manifest.json and package.json so
+      # the zip name, the manifest and the release always agree.
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          node -e '
+            const fs = require("fs")
+            const v = process.argv[1]
+            if (!/^\d+\.\d+\.\d+$/.test(v)) { console.error(`Tag must look like v1.2.3, got ${v}`); process.exit(1) }
+            for (const f of ["manifest.json", "package.json"]) {
+              const j = JSON.parse(fs.readFileSync(f, "utf8"))
+              j.version = v
+              fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n")
+            }
+          ' "$VERSION"
+
+      - run: npm test
+      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: npm run package
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.zip
+
+      # Optional: ask the vSuite catalog to refresh now instead of within the hour.
+      # Needs a VSUITE_STORE_TOKEN secret (fine-grained token with Actions: write on
+      # forebeacon/vsuite-store). Without it the hourly run picks the release up.
+      - name: Refresh vSuite catalog
+        if: env.VSUITE_STORE_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ env.VSUITE_STORE_TOKEN }}
+        run: gh workflow run "Update catalog" -R forebeacon/vsuite-store
